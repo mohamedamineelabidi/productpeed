@@ -5,6 +5,10 @@
 
 ## 🏛️ System Architecture
 
+![SpeedScale architecture flow](img/architecture.png)
+
+The diagram shows how each container participates in the end-to-end journey. Within the `speedscale-net` bridge network, Nginx in the `speedscale-frontend` container proxies every `/backend` request to the FastAPI gateway (`speedscale-node-c`). The gateway first consults Redis (`speedscale-node-b`) for cached payloads, and on a miss it queries MongoDB (`speedscale-node-a`) before writing fresh results back to Redis with a short TTL. A dedicated Redis Commander UI (`speedscale-redis-ui`) shares the same network so you can inspect cache keys in real time. All components run on your local host, with persistent product data stored in the `mongodb_data` Docker volume so restarts do not wipe the catalog.
+
 The system simulates a modern microservices architecture:
 
 1.  **Node A (Data Node): MongoDB**
