@@ -1,0 +1,86 @@
+version: '3.8'
+
+services:
+  # NODE A: Data Node (Cold Storage)
+  mongodb:
+    image: mongo:latest
+    container_name: speedscale-node-a
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodb_data:/data/db
+    networks:
+      - speedscale-net
+    healthcheck:
+      test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test --quiet
+      interval: 10s
+      timeout: 10s
+      retries: 5
+
+  # NODE B: Compute/Cache Node (Hot Storage)
+  redis:
+    # Using redis-stack to support future Vector Search/ML features
+    image: redis/redis-stack:latest
+    container_name: speedscale-node-b
+    ports:
+      - "6379:6379"
+      - "8001:8001" # RedisInsight UI
+    networks:
+      - speedscale-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # NODE C: Gateway Node (API) - Python Implementation
+  # You can switch this to build: ./server for the Node.js version
+  api_server:
+    build: 
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: speedscale-node-c
+    ports:
+      - "8000:8000"
+    environment:
+      - MONGO_URI=mongodb://mongodb:27017/speedscale
+      - REDIS_URL=redis://redis:6379
+      - API_PORT=8000
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - speedscale-net
+
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    container_name: speedscale-redis-ui
+    environment:
+      - REDIS_HOSTS=local:redis:6379
+    ports:
+      - "8081:8081"
+    depends_on:
+      - redis
+    networks:
+      - speedscale-net
+
+  frontend:
+    build:
+      context: ./apps/frontend
+      dockerfile: Dockerfile
+    container_name: speedscale-frontend
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api_server
+    networks:
+      - speedscale-net
+
+networks:
+  speedscale-net:
+    driver: bridge
+
+volumes:
+  mongodb_data:

@@ -1,0 +1,5 @@
+{
+  "name": "SpeedScale Dashboard",
+  "description": "Frontend control center for the 3-Computer SpeedScale E-Commerce Distributed System.",
+  "requestFramePermissions": []
+}
