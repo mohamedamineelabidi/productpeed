@@ -1,0 +1,245 @@
+version: '3.8'
+
+services:
+  # ================================
+  # CONFIG SERVERS (3 nodes)
+  # ================================
+  config-server-1:
+    image: mongo:latest
+    container_name: cluster-config-1
+    command: mongod --configsvr --replSet configReplSet --port 27017
+    volumes:
+      - config1_data:/data/configdb
+    networks:
+      - mongo-shard
+    restart: unless-stopped
+
+  config-server-2:
+    image: mongo:latest
+    container_name: cluster-config-2
+    command: mongod --configsvr --replSet configReplSet --port 27017
+    volumes:
+      - config2_data:/data/configdb
+    networks:
+      - mongo-shard
+    restart: unless-stopped
+
+  config-server-3:
+    image: mongo:latest
+    container_name: cluster-config-3
+    command: mongod --configsvr --replSet configReplSet --port 27017
+    volumes:
+      - config3_data:/data/configdb
+    networks:
+      - mongo-shard
+    restart: unless-stopped
+
+  # ================================
+  # SHARD 1 REPLICA SET (3 nodes)
+  # ================================
+  shard1-node1:
+    image: mongo:latest
+    container_name: cluster-shard1-node1
+    command: mongod --shardsvr --replSet shard1ReplSet --port 27017
+    volumes:
+      - shard1_node1_data:/data/db
+    networks:
+      - mongo-shard
+    restart: unless-stopped
+
+  shard1-node2:
+    image: mongo:latest
+    container_name: cluster-shard1-node2
+    command: mongod --shardsvr --replSet shard1ReplSet --port 27017
+    volumes:
+      - shard1_node2_data:/data/db
+    networks:
+      - mongo-shard
+    restart: unless-stopped
+
+  shard1-node3:
+    image: mongo:latest
+    container_name: cluster-shard1-node3
+    command: mongod --shardsvr --replSet shard1ReplSet --port 27017
+    volumes:
+      - shard1_node3_data:/data/db
+    networks:
+      - mongo-shard
+    restart: unless-stopped
+
+  # ================================
+  # SHARD 2 REPLICA SET (3 nodes)
+  # ================================
+  shard2-node1:
+    image: mongo:latest
+    container_name: cluster-shard2-node1
+    command: mongod --shardsvr --replSet shard2ReplSet --port 27017
+    volumes:
+      - shard2_node1_data:/data/db
+    networks:
+      - mongo-shard
+    restart: unless-stopped
+
+  shard2-node2:
+    image: mongo:latest
+    container_name: cluster-shard2-node2
+    command: mongod --shardsvr --replSet shard2ReplSet --port 27017
+    volumes:
+      - shard2_node2_data:/data/db
+    networks:
+      - mongo-shard
+    restart: unless-stopped
+
+  shard2-node3:
+    image: mongo:latest
+    container_name: cluster-shard2-node3
+    command: mongod --shardsvr --replSet shard2ReplSet --port 27017
+    volumes:
+      - shard2_node3_data:/data/db
+    networks:
+      - mongo-shard
+    restart: unless-stopped
+
+  # ================================
+  # MONGOS ROUTER (Gateway to Shards)
+  # ================================
+  mongos:
+    image: mongo:latest
+    container_name: cluster-mongos-router
+    command: mongos --configdb configReplSet/config-server-1:27017,config-server-2:27017,config-server-3:27017 --bind_ip_all --port 27017
+    ports:
+      - "27017:27017"
+    depends_on:
+      - config-server-1
+      - config-server-2
+      - config-server-3
+      - shard1-node1
+      - shard1-node2
+      - shard1-node3
+      - shard2-node1
+      - shard2-node2
+      - shard2-node3
+    networks:
+      - mongo-shard
+    healthcheck:
+      test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test --quiet
+      interval: 10s
+      timeout: 10s
+      retries: 5
+    restart: unless-stopped
+
+  # ================================
+  # INITIALIZATION SERVICE
+  # ================================
+  mongo-init:
+    image: mongo:latest
+    container_name: cluster-init
+    depends_on:
+      mongos:
+        condition: service_healthy
+    networks:
+      - mongo-shard
+    volumes:
+      - ./scripts/init-sharded-cluster.sh:/init-sharded-cluster.sh
+    entrypoint: ["/bin/bash", "/init-sharded-cluster.sh"]
+    restart: "no"
+
+  # ================================
+  # NODE B: REDIS CACHE (Hot Storage)
+  # ================================
+  redis:
+    image: redis/redis-stack:latest
+    container_name: cluster-redis-cache
+    ports:
+      - "6379:6379"
+      - "8001:8001"  # RedisInsight UI
+    networks:
+      - mongo-shard
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    container_name: cluster-redis-ui
+    environment:
+      - REDIS_HOSTS=local:redis:6379
+    ports:
+      - "8081:8081"
+    depends_on:
+      - redis
+    networks:
+      - mongo-shard
+    restart: unless-stopped
+
+  # ================================
+  # NODE C: API GATEWAY (Python FastAPI)
+  # ================================
+  api_server:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: cluster-api-gateway
+    ports:
+      - "8000:8000"
+    environment:
+      # CRITICAL: Connect to mongos router, NOT direct to shards
+      - MONGO_URI=mongodb://mongos:27017/speedscale
+      - REDIS_URL=redis://redis:6379
+      - API_PORT=8000
+      - AUTO_SEED=true
+      - SEED_TARGET=2000
+    depends_on:
+      mongos:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - mongo-shard
+    restart: unless-stopped
+
+  # ================================
+  # FRONTEND (React + Vite + Nginx)
+  # ================================
+  frontend:
+    build:
+      context: ./apps/frontend
+      dockerfile: Dockerfile
+    container_name: cluster-frontend
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api_server
+    networks:
+      - mongo-shard
+    restart: unless-stopped
+
+# ================================
+# NETWORKS
+# ================================
+networks:
+  mongo-shard:
+    driver: bridge
+    name: mongo-shard-network
+
+# ================================
+# VOLUMES (Persistent Storage)
+# ================================
+volumes:
+  # Config servers
+  config1_data:
+  config2_data:
+  config3_data:
+  
+  # Shard 1 replica set
+  shard1_node1_data:
+  shard1_node2_data:
+  shard1_node3_data:
+  
+  # Shard 2 replica set
+  shard2_node1_data:
+  shard2_node2_data:
+  shard2_node3_data:
